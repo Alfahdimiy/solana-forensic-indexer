@@ -36,13 +36,22 @@ export async function initDatabase(): Promise<void> {
       mint_address VARCHAR(88) NOT NULL, 
       event_type VARCHAR(50) NOT NULL, 
       risk_score INT DEFAULT 0, 
-      details TEXT, 
+      flagged_reasons TEXT, 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
     ); 
   `; 
 
   await pool.query(createTokensTable);
   await pool.query(createRiskLogsTable); 
+
+  // 3. Ensure flagged_reasons column exists if table was created previously without it
+  try {
+    await pool.query(`
+      ALTER TABLE risk_logs ADD COLUMN flagged_reasons TEXT;
+    `);
+  } catch (err: any) {
+    // Ignore error if column already exists
+  }
 
   console.log('✅ Connected to MySQL & verified schema (tokens & risk_logs tables).'); 
 }
