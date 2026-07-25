@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import PDFDocument from 'pdfkit';
 import { pool } from '../config/db.js';
 import { TokenEvaluator } from '../indexer/evaluator.js';
 
@@ -86,6 +87,91 @@ app.get('/api/tokens/:mint', async (req: Request, res: Response) => {
       success: false, 
       error: `Failed to evaluate token address: ${error.message}` 
     });
+  }
+});
+
+// 4. Downloadable PDF Forensic Audit Report Endpoint
+app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
+  const mint = req.params.mint as string;
+
+  try {
+    const [rows]: [any[], any] = await pool.query(
+      'SELECT * FROM tokens WHERE mint_address = ?',
+      [mint]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Token not found in indexer database.' });
+    }
+
+    const token = rows[0];
+
+    // Live on-chain evaluation for real-time holder share & risk flags
+    const liveProfile = await evaluator.evaluateToken(mint);
+
+    // Fetch recent risk logs to match highest recorded score
+    const [riskRows]: [any[], any] = await pool.query(
+      'SELECT * FROM risk_logs WHERE mint_address = ? ORDER BY risk_score DESC LIMIT 1',
+      [mint]
+    );
+
+    const highestRecordedScore = riskRows.length > 0 ? riskRows[0].risk_score : 0;
+    const finalRiskScore = Math.max(liveProfile.riskScore, highestRecordedScore);
+
+    const doc = new PDFDocument({ margin: 50 });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Forensic_Audit_${mint.slice(0, 8)}.pdf"`);
+
+    doc.pipe(res);
+
+    // Title & Header
+    doc.fontSize(20).fillColor('#0f172a').text('SOLANA FORENSIC GUARD ENGINE', { align: 'center' });
+    doc.fontSize(10).fillColor('#64748b').text('Official On-Chain Security Audit & Risk Certificate', { align: 'center' });
+    doc.moveDown(1.5);
+
+    // Metadata Summary
+    doc.fontSize(12).fillColor('#0f172a').text('Token Information', { underline: true });
+    doc.moveDown(0.5);
+    doc.fontSize(10).fillColor('#334155');
+    doc.text(`Mint Address: ${token.mint_address}`);
+    doc.text(`Decimals: ${token.decimals}`);
+    doc.text(`Mint Authority: ${token.mint_authority ? 'ACTIVE [FLAGGED]' : 'REVOKED [SAFE]'}`);
+    doc.text(`Freeze Authority: ${token.freeze_authority ? 'ACTIVE [FLAGGED]' : 'DISABLED [SAFE]'}`);
+    doc.text(`Top 10 Holders Share: ${liveProfile.topHolderPercentage}% ${liveProfile.topHolderPercentage > 40 ? '[HIGH CONCENTRATION]' : '[HEALTHY]'}`);
+    doc.moveDown(1.5);
+
+    // Status Section & Dynamic Risk Tiering
+    doc.fontSize(12).fillColor('#0f172a').text('Security Verification Status', { underline: true });
+    doc.moveDown(0.5);
+
+    if (finalRiskScore >= 50) {
+      doc.fontSize(12).fillColor('#dc2626').text(`STATUS: HIGH RISK // FLAGGED (Score: ${finalRiskScore}/100)`);
+    } else if (finalRiskScore > 0) {
+      doc.fontSize(12).fillColor('#d97706').text(`STATUS: MODERATE RISK // WARNINGS DETECTED (Score: ${finalRiskScore}/100)`);
+    } else {
+      doc.fontSize(12).fillColor('#059669').text(`STATUS: PASSED // LOW RISK (Score: ${finalRiskScore}/100)`);
+    }
+
+    doc.moveDown(0.5);
+
+    // Explicitly print identified risk factors
+    if (liveProfile.flaggedReasons.length > 0) {
+      doc.fontSize(10).fillColor('#0f172a').text('Risk Factors Identified:');
+      doc.moveDown(0.3);
+      liveProfile.flaggedReasons.forEach((reason) => {
+        doc.fontSize(9).fillColor('#b45309').text(`• ${reason}`);
+      });
+    } else {
+      doc.fontSize(9).fillColor('#334155').text('No active mint/freeze authorities or holder concentration anomalies detected on-chain.');
+    }
+
+    doc.moveDown(2);
+    doc.fontSize(8).fillColor('#94a3b8').text(`Generated: ${new Date().toISOString()}`, { align: 'right' });
+
+    doc.end();
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

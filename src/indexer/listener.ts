@@ -2,6 +2,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { ForensicParser } from './parser.js';
 import { TokenEvaluator } from './evaluator.js';
 import { pool } from '../config/db.js';
+import { sendTelegramRiskAlert } from '../services/notifier.js';
 
 export class SolanaListener {
   private connection: Connection;
@@ -46,9 +47,21 @@ export class SolanaListener {
             );
 
             try {
+              // 1. Persist risk log into MySQL database
               await this.logTransactionRisk(signature, programIdStr, analysis);
+
+              // 2. Dispatch Telegram alert if risk score is HIGH or CRITICAL (>= 50)
+              if (analysis.riskScore >= 50) {
+                await sendTelegramRiskAlert({
+                  mintAddress: programIdStr,
+                  eventType: analysis.eventType,
+                  riskScore: analysis.riskScore,
+                  reasons: analysis.flaggedReasons,
+                  signature,
+                });
+              }
             } catch (evalError: any) {
-              console.error(`⚠️ Failed to persist risk log for Tx ${signature.slice(0, 8)}:`, evalError.message);
+              console.error(`⚠️ Failed to process risk log for Tx ${signature.slice(0, 8)}:`, evalError.message);
             }
           }
         },
