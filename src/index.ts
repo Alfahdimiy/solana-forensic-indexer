@@ -1,24 +1,25 @@
 import dotenv from 'dotenv';
 import { initDatabase } from './config/db';
-import { SolanaListener } from './indexer/listener';
+import { TokenEvaluator } from './indexer/evaluator';
 
 dotenv.config();
-
-// Example: Raydium Liquidity Pool V4 Program
-const TARGET_PROGRAM_ID = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
 
 async function main() {
   try {
     await initDatabase();
 
-    const listener = new SolanaListener(
-      process.env.SOLANA_RPC_URL!,
-      process.env.SOLANA_WS_URL!
-    );
+    const evaluator = new TokenEvaluator(process.env.SOLANA_RPC_URL!);
 
-    await listener.startListening(TARGET_PROGRAM_ID);
+    // Example Test: Evaluate official USDC Mint
+    const testMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; 
+    console.log(`🔍 Evaluating token security flags for: ${testMint}...`);
+
+    const profile = await evaluator.evaluateToken(testMint);
+    console.log('📊 Security Profile Result:', profile);
+
+    await evaluator.saveTokenProfile(profile, 'test_signature_initialization');
   } catch (error) {
-    console.error('❌ Indexer initialization failed:', error);
+    console.error('❌ Failed to run token evaluator:', error);
   }
 }
 
