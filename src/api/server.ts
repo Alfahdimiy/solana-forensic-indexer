@@ -53,19 +53,21 @@ app.get('/api/tokens/:mint', async (req: Request, res: Response) => {
       [mint]
     );
 
-    // If not in database, execute live on-chain evaluation!
+    let liveProfile = null;
+
     if (tokenRows.length === 0) {
       console.log(`🔎 Token ${mint.slice(0, 8)}... not in DB. Evaluating on-chain live...`);
       
-      const profile = await evaluator.evaluateToken(mint);
-      await evaluator.saveTokenProfile(profile, 'api_on_demand_search');
+      liveProfile = await evaluator.evaluateToken(mint);
+      await evaluator.saveTokenProfile(liveProfile, 'api_on_demand_search');
 
-      // Fetch newly created record
       const [newRows]: [any[], any] = await pool.query(
         'SELECT * FROM tokens WHERE mint_address = ?',
         [mint]
       );
       tokenRows = newRows;
+    } else {
+      console.log(`⚡ Token ${mint.slice(0, 8)}... retrieved from MySQL cache.`);
     }
 
     const [riskRows] = await pool.query(
@@ -76,6 +78,7 @@ app.get('/api/tokens/:mint', async (req: Request, res: Response) => {
     res.json({
       success: true,
       token: tokenRows[0],
+      liveProfile,
       riskHistory: riskRows,
     });
   } catch (error: any) {

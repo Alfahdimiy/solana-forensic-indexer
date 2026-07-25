@@ -197,21 +197,38 @@ export default function Dashboard() {
                   <div className="space-y-3 text-sm">
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400">Mint Authority:</span>
-                      <span className={`font-mono text-xs ${searchResult.token.mint_authority ? 'text-amber-400' : 'text-emerald-400'}`}>
-                        {searchResult.token.mint_authority ? 'ACTIVE ⚠️' : 'REVOKED ✅'}
+                      <span className={`font-mono text-xs ${searchResult.token?.mint_authority ? 'text-amber-400' : 'text-emerald-400'}`}>
+                        {searchResult.token?.mint_authority ? 'ACTIVE ⚠️' : 'REVOKED ✅'}
                       </span>
                     </div>
 
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400">Freeze Authority:</span>
-                      <span className={`font-mono text-xs ${searchResult.token.freeze_authority ? 'text-red-400' : 'text-emerald-400'}`}>
-                        {searchResult.token.freeze_authority ? 'ACTIVE 🚨' : 'DISABLED ✅'}
+                      <span className={`font-mono text-xs ${searchResult.token?.freeze_authority ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {searchResult.token?.freeze_authority ? 'ACTIVE 🚨' : 'DISABLED ✅'}
+                      </span>
+                    </div>
+
+                    {/* Top Holder Concentration */}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">Top 10 Holders:</span>
+                      <span className={`font-mono text-xs ${searchResult.liveProfile?.topHolderPercentage > 40 ? 'text-amber-400 font-bold' : 'text-emerald-400'}`}>
+                        {searchResult.liveProfile ? `${searchResult.liveProfile.topHolderPercentage}%` : 'N/A'} 
+                        {searchResult.liveProfile?.topHolderPercentage > 40 ? ' ⚠️' : ' ✅'}
+                      </span>
+                    </div>
+
+                    {/* LP Status */}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">LP Status:</span>
+                      <span className="font-mono text-xs text-emerald-400">
+                        {searchResult.liveProfile?.isLpBurnedOrLocked ? 'BURNED / LOCKED ✅' : 'UNLOCKED ⚠️'}
                       </span>
                     </div>
 
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400">Decimals:</span>
-                      <span className="font-mono text-slate-200">{searchResult.token.decimals}</span>
+                      <span className="font-mono text-slate-200">{searchResult.token?.decimals}</span>
                     </div>
 
                     {searchResult.riskHistory && searchResult.riskHistory.length > 0 && (
