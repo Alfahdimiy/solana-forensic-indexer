@@ -1,25 +1,30 @@
 import dotenv from 'dotenv';
 import { initDatabase } from './config/db';
-import { TokenEvaluator } from './indexer/evaluator';
+import { SolanaListener } from './indexer/listener';
+import { startApiServer } from './api/server';
 
 dotenv.config();
 
+// Raydium AMM V4 Program ID
+const TARGET_PROGRAM_ID = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
+
 async function main() {
   try {
+    // 1. Initialize database schema & migrations
     await initDatabase();
 
-    const evaluator = new TokenEvaluator(process.env.SOLANA_RPC_URL!);
+    // 2. Start REST API Server
+    startApiServer();
 
-    // Example Test: Evaluate official USDC Mint
-    const testMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; 
-    console.log(`🔍 Evaluating token security flags for: ${testMint}...`);
+    // 3. Boot up real-time listener pipeline
+    const listener = new SolanaListener(
+      process.env.SOLANA_RPC_URL!,
+      process.env.SOLANA_WS_URL!
+    );
 
-    const profile = await evaluator.evaluateToken(testMint);
-    console.log('📊 Security Profile Result:', profile);
-
-    await evaluator.saveTokenProfile(profile, 'test_signature_initialization');
+    await listener.startListening(TARGET_PROGRAM_ID);
   } catch (error) {
-    console.error('❌ Failed to run token evaluator:', error);
+    console.error('❌ Application launch failed:', error);
   }
 }
 
