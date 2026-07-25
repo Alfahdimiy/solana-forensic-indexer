@@ -52,4 +52,6 @@ export class SolanaListener {
       VALUES (?, ?, ?, ?, ?)
     `;
     await pool.execute(query, [signature, mintAddress, eventType, riskScore, details]);
-    console.log(`💾 Saved risk r
+    console.log(`💾 Saved risk record to database for Tx: ${signature.slice(0, 8)}...`);
+  }
+}

@@ -27,4 +27,5 @@ export async function initDatabase(): Promise<void> {
     );
   `;
   await pool.query(query);
-  console.log('✅ Connected to MySQL & verified risk_logs
+  console.log('✅ Connected to MySQL & verified risk_logs table.');
+}
