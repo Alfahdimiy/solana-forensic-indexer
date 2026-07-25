@@ -8,7 +8,13 @@ import { sendTelegramRiskAlert } from '../services/notifier.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// Enable explicit CORS for Vercel cross-origin requests
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 // Initialize Evaluator for On-Demand Requests
