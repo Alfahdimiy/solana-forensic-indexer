@@ -8,4 +8,4 @@ A real-time on-chain forensic indexer built with TypeScript, @solana/web3.js, an
 ## Setup & Execution
 1. Configure \`.env\` with your database and RPC credentials.
 2. Ensure MySQL is running locally.
-3. Run \`npm run dev\` or \`npx tsx src/index.ts\`." > README.md
+3. Run \npm run dev\ or \npx tsx src/index.ts
