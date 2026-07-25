@@ -3,7 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldAlert, ShieldCheck, Search, Activity, AlertTriangle, 
-  ExternalLink, RefreshCw, FileText, Cpu, Database, Radio, Filter 
+  ExternalLink, RefreshCw, FileText, Cpu, Database, Radio, Filter,
+  Copy, Check
 } from 'lucide-react';
 
 interface RiskLog {
@@ -25,8 +26,16 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [fetchingLogs, setFetchingLogs] = useState(true);
   const [filterSeverity, setFilterSeverity] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'SAFE'>('ALL');
+  const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
 
   const API_BASE = 'http://localhost:3000/api';
+
+  // Copy helper function
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedWallet(label);
+    setTimeout(() => setCopiedWallet(null), 2000);
+  };
 
   // Fetch live risk feed from Express API
   const fetchRiskFeed = async () => {
@@ -283,6 +292,67 @@ export default function Dashboard() {
                   <p className="text-xs text-red-400 font-mono">[SCAN_ERROR] {searchResult.error}</p>
                 ) : (
                   <div className="space-y-2.5 text-xs">
+                    {/* Extended On-Chain Identity Metrics */}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">TOKEN NAME:</span>
+                      <span className="font-bold text-cyan-300">
+                        {searchResult.liveProfile?.name || 'Unknown'} (${searchResult.liveProfile?.symbol || 'N/A'})
+                      </span>
+                    </div>
+
+                    {/* CREATOR WALLET WITH CLICK-TO-COPY */}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">CREATOR WALLET:</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-slate-300">
+                          {searchResult.liveProfile?.creatorWallet 
+                            ? `${searchResult.liveProfile.creatorWallet.slice(0, 6)}...${searchResult.liveProfile.creatorWallet.slice(-4)}`
+                            : 'UNKNOWN / REVOKED'}
+                        </span>
+                        {searchResult.liveProfile?.creatorWallet && (
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(searchResult.liveProfile.creatorWallet, 'creator')}
+                            title="Copy Creator Wallet Address"
+                            className="p-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-cyan-300 transition-colors flex items-center gap-1"
+                          >
+                            {copiedWallet === 'creator' ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span className="text-[9px] text-emerald-400 font-bold">COPIED</span>
+                              </>
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">PRIMARY MARKET:</span>
+                      <span className="font-bold text-teal-400">{searchResult.liveProfile?.tradedMarket || 'Raydium / DEX'}</span>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">POOL LIQUIDITY:</span>
+                      <span className="font-bold text-emerald-400">
+                        ${(searchResult.liveProfile?.liquidityUsd || 0).toLocaleString()} USD
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-400">LAUNCH TIME:</span>
+                      <span className="text-slate-300">
+                        {searchResult.liveProfile?.launchTimestamp 
+                          ? new Date(searchResult.liveProfile.launchTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          : 'Aged On-Chain'}
+                      </span>
+                    </div>
+
+                    <div className="my-2 border-t border-slate-800/80" />
+
+                    {/* Authority & Security Controls */}
                     <div className="flex justify-between items-center">
                       <span className="text-slate-400">MINT AUTH:</span>
                       <span className={`font-bold ${searchResult.token?.mint_authority ? 'text-amber-400' : 'text-emerald-400'}`}>

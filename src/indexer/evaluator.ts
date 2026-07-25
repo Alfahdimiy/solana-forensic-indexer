@@ -4,6 +4,12 @@ import { pool } from '../config/db.js';
 
 export interface SecurityProfile {
   mintAddress: string;
+  name: string;
+  symbol: string;
+  creatorWallet: string | null;
+  launchTimestamp: string | null;
+  tradedMarket: string;
+  liquidityUsd: number;
   decimals: number;
   mintAuthority: string | null;
   freezeAuthority: string | null;
@@ -15,125 +21,193 @@ export interface SecurityProfile {
 
 export class TokenEvaluator {
   private connection: Connection;
+  private rpcUrl: string;
 
   constructor(rpcUrl: string) {
+    this.rpcUrl = rpcUrl;
     this.connection = new Connection(rpcUrl, 'confirmed');
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number = 8000): Promise<T> {
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`RPC Call Timed Out (${timeoutMs}ms)`)), timeoutMs)
-    );
-    return Promise.race([promise, timeoutPromise]);
-  }
-
-  /**
-   * Safely fetches mint info, auto-detecting Standard SPL Token vs Token-2022
-   */
-  private async fetchMintDataSafely(mintPubkey: PublicKey): Promise<Mint> {
+  private async fetchHeliusMetadata(mintStr: string) {
     try {
-      // Try fetching as standard SPL Token
-      return await this.withTimeout(getMint(this.connection, mintPubkey, 'confirmed', TOKEN_PROGRAM_ID), 5000);
+      const res = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'get-asset',
+          method: 'getAsset',
+          params: { id: mintStr },
+        }),
+      });
+      const json = await res.json();
+      const result = json.result;
+
+      const name = result?.content?.metadata?.name || 'Unknown Token';
+      const symbol = result?.content?.metadata?.symbol || 'UNKNOWN';
+
+      // Multi-fallback creator address extraction
+      let creator: string | null = null;
+
+      // 1. Try DAS creators array
+      if (result?.creators && result.creators.length > 0) {
+        creator = result.creators[0].address;
+      }
+
+      // 2. Try DAS authorities array
+      if (!creator && result?.authorities && result.authorities.length > 0) {
+        creator = result.authorities[0].address;
+      }
+
+      // 3. Try ownership / royalty owner record
+      if (!creator && result?.ownership?.owner) {
+        creator = result.ownership.owner;
+      }
+
+      return { name, symbol, creator };
     } catch {
-      // Fall back to Token-2022 Program
-      return await this.withTimeout(getMint(this.connection, mintPubkey, 'confirmed', TOKEN_2022_PROGRAM_ID), 5000);
+      return { name: 'Unknown Token', symbol: 'UNKNOWN', creator: null };
     }
   }
 
-  private async checkHolderConcentration(mintPubkey: PublicKey, decimals: number): Promise<{ topHolderPct: number; flagged: boolean }> {
+  private async fetchMarketData(mintStr: string) {
     try {
-      const largestAccounts = await this.withTimeout(
-        this.connection.getTokenLargestAccounts(mintPubkey),
-        6000
-      );
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintStr}`);
+      const json = await res.json();
+      const pair = json.pairs?.[0];
 
-      if (!largestAccounts || !largestAccounts.value || largestAccounts.value.length === 0) {
-        return { topHolderPct: 0, flagged: false };
+      if (!pair) {
+        return { market: 'Unknown / Unlisted DEX', liquidityUsd: 0, createdAt: null, creator: null };
       }
 
-      const totalTopSupply = largestAccounts.value.slice(0, 10).reduce((acc, account) => {
-        return acc + (account.uiAmount || 0);
-      }, 0);
+      // Extract creator address if provided in DexScreener pair info
+      const creator = pair.info?.socials?.[0]?.url?.includes('pump.fun')
+        ? pair.info?.socials?.[0]?.url.split('/').pop()
+        : null;
 
-      const supplyInfo = await this.withTimeout(this.connection.getTokenSupply(mintPubkey), 5000);
-      const totalSupply = Number(supplyInfo.value.amount) / Math.pow(10, decimals);
-
-      if (totalSupply === 0) return { topHolderPct: 0, flagged: false };
-
-      const top10Pct = (totalTopSupply / totalSupply) * 100;
       return {
-        topHolderPct: parseFloat(top10Pct.toFixed(2)),
-        flagged: top10Pct > 40,
+        market: pair.dexId ? pair.dexId.toUpperCase() : 'RAYDIUM / PUMP.FUN',
+        liquidityUsd: pair.liquidity?.usd || 0,
+        createdAt: pair.pairCreatedAt ? new Date(pair.pairCreatedAt).toISOString() : null,
+        creator,
       };
     } catch {
-      return { topHolderPct: 0, flagged: false };
+      return { market: 'Raydium / DEX', liquidityUsd: 0, createdAt: null, creator: null };
+    }
+  }
+
+  private async fetchTopHolderConcentration(mintPubkey: PublicKey, totalSupply: bigint): Promise<number> {
+    try {
+      if (totalSupply === 0n) return 0;
+
+      // 1. Primary Attempt: Native Solana RPC
+      const largestAccounts = await this.connection.getTokenLargestAccounts(mintPubkey, 'confirmed');
+      const accounts = largestAccounts.value || [];
+
+      if (accounts.length > 0) {
+        let top10Supply = 0n;
+        for (const acc of accounts.slice(0, 10)) {
+          top10Supply += BigInt(acc.amount);
+        }
+        const percentage = (Number(top10Supply) / Number(totalSupply)) * 100;
+        return Number(percentage.toFixed(2));
+      }
+
+      // 2. Fallback Attempt: Helius RPC DAS parser for newly launched / Pump.fun tokens
+      const res = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'get-holders',
+          method: 'getTokenAccounts',
+          params: { mint: mintPubkey.toBase58(), limit: 10 },
+        }),
+      });
+
+      const json = await res.json();
+      const tokenAccounts = json.result?.token_accounts || [];
+
+      if (tokenAccounts.length > 0) {
+        let top10Supply = 0n;
+        for (const acc of tokenAccounts) {
+          top10Supply += BigInt(acc.amount || 0);
+        }
+        const percentage = (Number(top10Supply) / Number(totalSupply)) * 100;
+        return Number(percentage.toFixed(2));
+      }
+
+      return 0;
+    } catch {
+      return 0;
     }
   }
 
   public async evaluateToken(mintAddressStr: string): Promise<SecurityProfile> {
-    let mintPubkey: PublicKey;
-    try {
-      mintPubkey = new PublicKey(mintAddressStr);
-    } catch {
-      throw new Error('Invalid Solana PublicKey address format');
-    }
+    const mintPubkey = new PublicKey(mintAddressStr);
 
+    // 1. Fetch metadata & market info in parallel
+    const [meta, marketData] = await Promise.all([
+      this.fetchHeliusMetadata(mintAddressStr),
+      this.fetchMarketData(mintAddressStr),
+    ]);
+
+    // 2. Fetch mint info on-chain
     let mintInfo: Mint;
     try {
-      mintInfo = await this.fetchMintDataSafely(mintPubkey);
+      mintInfo = await getMint(this.connection, mintPubkey, 'confirmed', TOKEN_PROGRAM_ID);
     } catch {
-      console.warn(`⚠️ Could not resolve mint account on-chain for ${mintAddressStr.slice(0, 8)}...`);
-      return {
-        mintAddress: mintAddressStr,
-        decimals: 6,
-        mintAuthority: null,
-        freezeAuthority: null,
-        riskScore: 0,
-        flaggedReasons: ['UNABLE_TO_VERIFY: Account is not a valid SPL Token Mint on Solana mainnet'],
-        topHolderPercentage: 0,
-        isLpBurnedOrLocked: true,
-      };
+      mintInfo = await getMint(this.connection, mintPubkey, 'confirmed', TOKEN_2022_PROGRAM_ID);
     }
+
+    // Resolve creator wallet with fallback hierarchy
+    const resolvedCreator = meta.creator || marketData.creator || (mintInfo.mintAuthority ? mintInfo.mintAuthority.toBase58() : null);
+
+    // 3. Compute top 10 holders concentration percentage
+    const topHolderPercentage = await this.fetchTopHolderConcentration(mintPubkey, mintInfo.supply);
 
     let riskScore = 0;
     const flaggedReasons: string[] = [];
 
-    // 1. Freeze Authority Check
     const freezeAuth = mintInfo.freezeAuthority ? mintInfo.freezeAuthority.toBase58() : null;
     if (freezeAuth) {
       riskScore += 40;
-      flaggedReasons.push('FREEZE_AUTHORITY_ACTIVE: Creator can halt transfers/trading');
+      flaggedReasons.push('FREEZE_AUTHORITY_ACTIVE: Creator can halt transfers');
     }
 
-    // 2. Mint Authority Check
     const mintAuth = mintInfo.mintAuthority ? mintInfo.mintAuthority.toBase58() : null;
     if (mintAuth) {
       riskScore += 35;
-      flaggedReasons.push('MINT_AUTHORITY_ACTIVE: Creator can print additional supply');
+      flaggedReasons.push('MINT_AUTHORITY_ACTIVE: Creator can print supply');
     }
 
-    // 3. Top Holder Concentration Check
-    const holderAnalysis = await this.checkHolderConcentration(mintPubkey, mintInfo.decimals);
-    if (holderAnalysis.flagged) {
+    if (topHolderPercentage > 40) {
       riskScore += 20;
-      flaggedReasons.push(`HIGH_HOLDER_CONCENTRATION: Top 10 wallets hold ${holderAnalysis.topHolderPct}% of supply`);
+      flaggedReasons.push(`HIGH_HOLDER_CONCENTRATION: Top 10 wallets hold ${topHolderPercentage}% of supply`);
     }
-
-    riskScore = Math.min(riskScore, 100);
 
     return {
       mintAddress: mintAddressStr,
+      name: meta.name,
+      symbol: meta.symbol,
+      creatorWallet: resolvedCreator,
+      launchTimestamp: marketData.createdAt,
+      tradedMarket: marketData.market,
+      liquidityUsd: marketData.liquidityUsd,
       decimals: mintInfo.decimals,
       mintAuthority: mintAuth,
       freezeAuthority: freezeAuth,
-      riskScore,
+      riskScore: Math.min(riskScore, 100),
       flaggedReasons,
-      topHolderPercentage: holderAnalysis.topHolderPct,
+      topHolderPercentage,
       isLpBurnedOrLocked: true,
     };
   }
 
-  public async saveTokenProfile(profile: SecurityProfile, signature: string): Promise<void> {
+  /**
+   * Persists security profiles and flagged risk logs into MySQL database
+   */
+  public async saveTokenProfile(profile: SecurityProfile, source: string): Promise<void> {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -142,22 +216,30 @@ export class TokenEvaluator {
         `INSERT INTO tokens (mint_address, decimals, mint_authority, freeze_authority)
          VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE 
+           decimals = VALUES(decimals),
            mint_authority = VALUES(mint_authority),
            freeze_authority = VALUES(freeze_authority)`,
-        [profile.mintAddress, profile.decimals, profile.mintAuthority, profile.freezeAuthority]
-      );
-
-      await connection.query(
-        `INSERT INTO risk_logs (mint_address, signature, event_type, risk_score, flagged_reasons)
-         VALUES (?, ?, ?, ?, ?)`,
         [
           profile.mintAddress,
-          signature,
-          profile.riskScore >= 50 ? 'HIGH_RISK_DETECTED' : 'SECURITY_AUDIT',
-          profile.riskScore,
-          JSON.stringify(profile.flaggedReasons),
+          profile.decimals,
+          profile.mintAuthority,
+          profile.freezeAuthority,
         ]
       );
+
+      if (profile.riskScore > 0) {
+        await connection.query(
+          `INSERT INTO risk_logs (mint_address, signature, event_type, risk_score, flagged_reasons)
+           VALUES (?, ?, 'SECURITY_AUDIT', ?, ?)
+           ON DUPLICATE KEY UPDATE risk_score = VALUES(risk_score)`,
+          [
+            profile.mintAddress,
+            source,
+            profile.riskScore,
+            JSON.stringify(profile.flaggedReasons),
+          ]
+        );
+      }
 
       await connection.commit();
       console.log(`💾 Persisted security profile for ${profile.mintAddress.slice(0, 8)}... (Score: ${profile.riskScore}/100)`);

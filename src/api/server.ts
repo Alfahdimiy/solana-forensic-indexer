@@ -3,6 +3,7 @@ import cors from 'cors';
 import PDFDocument from 'pdfkit';
 import { pool } from '../config/db.js';
 import { TokenEvaluator } from '../indexer/evaluator.js';
+import { sendTelegramRiskAlert } from '../services/notifier.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,12 +70,28 @@ app.get('/api/tokens/:mint', async (req: Request, res: Response) => {
       tokenRows = newRows;
     } else {
       console.log(`⚡ Token ${mint.slice(0, 8)}... retrieved from MySQL cache.`);
+      liveProfile = await evaluator.evaluateToken(mint);
     }
 
     const [riskRows] = await pool.query(
       'SELECT * FROM risk_logs WHERE mint_address = ? ORDER BY created_at DESC',
       [mint]
     );
+
+    // 📡 TRIGGER TELEGRAM ALERT: Dispatch with Token Name & Symbol
+    if (liveProfile) {
+      if (liveProfile.riskScore === 0 || liveProfile.riskScore >= 50) {
+        await sendTelegramRiskAlert({
+          mintAddress: liveProfile.mintAddress,
+          name: liveProfile.name,
+          symbol: liveProfile.symbol,
+          eventType: 'ON_DEMAND_AUDIT',
+          riskScore: liveProfile.riskScore,
+          reasons: liveProfile.flaggedReasons,
+          signature: 'api_on_demand_search',
+        });
+      }
+    }
 
     res.json({
       success: true,
@@ -90,7 +107,7 @@ app.get('/api/tokens/:mint', async (req: Request, res: Response) => {
   }
 });
 
-// 4. Downloadable PDF Forensic Audit Report Endpoint
+// 4. Downloadable PDF Forensic Audit Report Endpoint (Synchronized with MySQL Risk Engine & Live Profile)
 app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
   const mint = req.params.mint as string;
 
@@ -106,17 +123,29 @@ app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
 
     const token = rows[0];
 
-    // Live on-chain evaluation for real-time holder share & risk flags
+    // 1. Live on-chain evaluation for real-time holder share, liquidity & market metadata
     const liveProfile = await evaluator.evaluateToken(mint);
 
-    // Fetch recent risk logs to match highest recorded score
+    // 2. Fetch all recorded risk events from MySQL database engine
     const [riskRows]: [any[], any] = await pool.query(
-      'SELECT * FROM risk_logs WHERE mint_address = ? ORDER BY risk_score DESC LIMIT 1',
+      'SELECT * FROM risk_logs WHERE mint_address = ? ORDER BY risk_score DESC',
       [mint]
     );
 
-    const highestRecordedScore = riskRows.length > 0 ? riskRows[0].risk_score : 0;
-    const finalRiskScore = Math.max(liveProfile.riskScore, highestRecordedScore);
+    // 3. Aggregate highest risk score between live calculation and indexed DB logs
+    const highestDbScore = riskRows.length > 0 ? riskRows[0].risk_score : 0;
+    const finalRiskScore = Math.max(liveProfile.riskScore, highestDbScore);
+
+    // 4. Consolidate and deduplicate flagged reasons from both sources
+    const dbReasons: string[] = [];
+    riskRows.forEach((r: any) => {
+      try {
+        const parsed = typeof r.flagged_reasons === 'string' ? JSON.parse(r.flagged_reasons) : r.flagged_reasons;
+        if (Array.isArray(parsed)) dbReasons.push(...parsed);
+      } catch {}
+    });
+
+    const allFlaggedReasons = Array.from(new Set([...liveProfile.flaggedReasons, ...dbReasons]));
 
     const doc = new PDFDocument({ margin: 50 });
 
@@ -127,21 +156,32 @@ app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
 
     // Title & Header
     doc.fontSize(20).fillColor('#0f172a').text('SOLANA FORENSIC GUARD ENGINE', { align: 'center' });
-    doc.fontSize(10).fillColor('#64748b').text('Official On-Chain Security Audit & Risk Certificate', { align: 'center' });
+    doc.fontSize(10).fillColor('#64748b').text('Official On-Chain Security Audit & Metadata Certificate', { align: 'center' });
     doc.moveDown(1.5);
 
-    // Metadata Summary
-    doc.fontSize(12).fillColor('#0f172a').text('Token Information', { underline: true });
+    // Section 1: Token Identity & Market Profile
+    doc.fontSize(12).fillColor('#0f172a').text('Token Profile & Market Metadata', { underline: true });
     doc.moveDown(0.5);
     doc.fontSize(10).fillColor('#334155');
+    doc.text(`Token Name: ${liveProfile.name || 'Unknown'} ($${liveProfile.symbol || 'UNKNOWN'})`);
     doc.text(`Mint Address: ${token.mint_address}`);
+    doc.text(`Creator Wallet: ${liveProfile.creatorWallet || 'UNKNOWN / DECENTRALIZED'}`);
+    doc.text(`Traded DEX / Market: ${liveProfile.tradedMarket || 'Raydium / Pump.fun'}`);
+    doc.text(`Live Pool Liquidity: $${(liveProfile.liquidityUsd || 0).toLocaleString()} USD`);
+    doc.text(`Launch Timestamp: ${liveProfile.launchTimestamp || 'Aged On-Chain'}`);
     doc.text(`Decimals: ${token.decimals}`);
+    doc.moveDown(1.5);
+
+    // Section 2: Authority & Holder Distribution
+    doc.fontSize(12).fillColor('#0f172a').text('On-Chain Authority & Concentration Checks', { underline: true });
+    doc.moveDown(0.5);
+    doc.fontSize(10).fillColor('#334155');
     doc.text(`Mint Authority: ${token.mint_authority ? 'ACTIVE [FLAGGED]' : 'REVOKED [SAFE]'}`);
     doc.text(`Freeze Authority: ${token.freeze_authority ? 'ACTIVE [FLAGGED]' : 'DISABLED [SAFE]'}`);
     doc.text(`Top 10 Holders Share: ${liveProfile.topHolderPercentage}% ${liveProfile.topHolderPercentage > 40 ? '[HIGH CONCENTRATION]' : '[HEALTHY]'}`);
     doc.moveDown(1.5);
 
-    // Status Section & Dynamic Risk Tiering
+    // Section 3: Status Verification & Risk Classification
     doc.fontSize(12).fillColor('#0f172a').text('Security Verification Status', { underline: true });
     doc.moveDown(0.5);
 
@@ -155,11 +195,11 @@ app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
 
     doc.moveDown(0.5);
 
-    // Explicitly print identified risk factors
-    if (liveProfile.flaggedReasons.length > 0) {
-      doc.fontSize(10).fillColor('#0f172a').text('Risk Factors Identified:');
+    // Section 4: Consolidated Risk Listing
+    if (allFlaggedReasons.length > 0) {
+      doc.fontSize(10).fillColor('#0f172a').text('Risk Factors Identified by Backend Engine:');
       doc.moveDown(0.3);
-      liveProfile.flaggedReasons.forEach((reason) => {
+      allFlaggedReasons.forEach((reason) => {
         doc.fontSize(9).fillColor('#b45309').text(`• ${reason}`);
       });
     } else {
