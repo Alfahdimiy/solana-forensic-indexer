@@ -28,7 +28,10 @@ export default function Dashboard() {
   const [filterSeverity, setFilterSeverity] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'SAFE'>('ALL');
   const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
 
-  const API_BASE = 'http://localhost:3000/api';
+  // Dynamic API URL for Vercel -> Render production connection
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL 
+    ? `${process.env.NEXT_PUBLIC_API_URL}/api`
+    : 'https://solana-forensic-indexer.onrender.com/api';
 
   // Copy helper function
   const copyToClipboard = (text: string, label: string) => {
