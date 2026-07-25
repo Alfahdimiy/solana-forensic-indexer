@@ -30,7 +30,7 @@ export default function Dashboard() {
 
   // Dynamic API URL for Vercel -> Render production connection
   const API_BASE = process.env.NEXT_PUBLIC_API_URL 
-    ? `${process.env.NEXT_PUBLIC_API_URL}/api`
+    ? `${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '')}/api`
     : 'https://solana-forensic-indexer.onrender.com/api';
 
   // Copy helper function
@@ -45,9 +45,10 @@ export default function Dashboard() {
     setFetchingLogs(true);
     try {
       const res = await fetch(`${API_BASE}/tokens/risks`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.success) {
-        setLogs(json.data);
+        setLogs(json.data || []);
       }
     } catch (err) {
       console.error('Failed to fetch risk feed:', err);
@@ -63,19 +64,22 @@ export default function Dashboard() {
   // Search specific mint address
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchMint.trim() || loading) return;
+    const cleanMint = searchMint.trim();
+    if (!cleanMint || loading) return;
+
     setLoading(true);
     setSearchResult(null);
 
     try {
-      const res = await fetch(`${API_BASE}/tokens/${searchMint.trim()}`);
+      const res = await fetch(`${API_BASE}/tokens/${cleanMint}`);
       const json = await res.json();
       if (json.success) {
         setSearchResult(json);
       } else {
-        setSearchResult({ error: 'Token mint not found in indexer database.' });
+        setSearchResult({ error: json.error || 'Token mint evaluation failed.' });
       }
     } catch (err) {
+      console.error('Search API connection error:', err);
       setSearchResult({ error: 'Failed to connect to indexer API.' });
     } finally {
       setLoading(false);
@@ -182,89 +186,8 @@ export default function Dashboard() {
       {/* Main Workspace */}
       <main className="max-w-7xl mx-auto mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6 relative z-10">
         
-        {/* Left Section: Filterable Forensic Event Stream */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
-            <div className="flex items-center gap-2">
-              <Activity className="w-4 h-4 text-cyan-400" />
-              <span className="text-xs font-bold tracking-wider text-slate-300">REALTIME THREAT LOGS</span>
-            </div>
-
-            {/* Severity Filter Controls */}
-            <div className="flex items-center gap-1.5 text-[11px]">
-              <Filter className="w-3 h-3 text-slate-500 mr-1" />
-              {(['ALL', 'CRITICAL', 'HIGH', 'SAFE'] as const).map((sev) => (
-                <button
-                  key={sev}
-                  onClick={() => setFilterSeverity(sev)}
-                  className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all ${
-                    filterSeverity === sev
-                      ? 'bg-cyan-950 text-cyan-300 border-cyan-700'
-                      : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
-                  }`}
-                >
-                  {sev}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {filteredLogs.length === 0 && !fetchingLogs ? (
-              <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-8 text-center text-xs text-slate-600 font-mono">
-                [SYSTEM_IDLE] No events matching current severity filter...
-              </div>
-            ) : (
-              filteredLogs.map((item, index) => {
-                const reasons = typeof item.flagged_reasons === 'string' 
-                  ? JSON.parse(item.flagged_reasons) 
-                  : item.flagged_reasons || [];
-
-                return (
-                  <div key={index} className="bg-slate-900/80 border border-slate-800/90 rounded-lg p-4 hover:border-cyan-800/60 transition-all">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs font-bold text-cyan-300">
-                            {item.mint_address.slice(0, 10)}...{item.mint_address.slice(-6)}
-                          </span>
-                          {getRiskBadge(item.risk_score)}
-                        </div>
-                        <p className="text-[11px] text-slate-500 mt-1">
-                          EVENT: <span className="text-slate-300">{item.event_type}</span> | TX: {item.signature.slice(0, 12)}...
-                        </p>
-                      </div>
-
-                      <a 
-                        href={`https://solana.fm/address/${item.mint_address}`} 
-                        target="_blank" 
-                        rel="noreferrer"
-                        className="text-slate-600 hover:text-cyan-400 transition-colors p-1"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                    </div>
-
-                    {/* Forensic Reasons Banner */}
-                    {reasons.length > 0 && (
-                      <div className="mt-3 pt-2.5 border-t border-slate-800/80 space-y-1">
-                        {reasons.map((r: string, rIdx: number) => (
-                          <div key={rIdx} className="flex items-center gap-2 text-[11px] text-amber-400/90">
-                            <AlertTriangle className="w-3 h-3 shrink-0" />
-                            <span>{r}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Right Section: Interactive Forensic Audit Scanner */}
-        <div className="space-y-4">
+        {/* On-Demand Audit Scanner: ORDERED FIRST ON MOBILE (order-first), LAST ON DESKTOP (lg:order-last) */}
+        <div className="space-y-4 order-first lg:order-last">
           <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-5">
             <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-800">
               <Search className="w-4 h-4 text-cyan-400" />
@@ -391,7 +314,7 @@ export default function Dashboard() {
 
                     {/* PDF Export Action */}
                     <a
-                      href={`${API_BASE}/tokens/${searchResult.token?.mint_address}/report`}
+                      href={`${API_BASE}/tokens/${searchResult.token?.mint_address || searchMint.trim()}/report`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="mt-4 flex items-center justify-center gap-2 w-full bg-slate-950 hover:bg-slate-800 text-cyan-400 font-bold py-2 rounded text-xs border border-cyan-900/60 transition-all"
@@ -402,6 +325,92 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* Realtime Threat Stream: ORDERED LAST ON MOBILE (order-last), FIRST ON DESKTOP (lg:order-first) */}
+        <div className="lg:col-span-2 space-y-4 order-last lg:order-first">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-bold tracking-wider text-slate-300">REALTIME THREAT LOGS</span>
+            </div>
+
+            {/* Severity Filter Controls */}
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <Filter className="w-3 h-3 text-slate-500 mr-1" />
+              {(['ALL', 'CRITICAL', 'HIGH', 'SAFE'] as const).map((sev) => (
+                <button
+                  key={sev}
+                  onClick={() => setFilterSeverity(sev)}
+                  className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all ${
+                    filterSeverity === sev
+                      ? 'bg-cyan-950 text-cyan-300 border-cyan-700'
+                      : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
+                  }`}
+                >
+                  {sev}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {filteredLogs.length === 0 && !fetchingLogs ? (
+              <div className="bg-slate-900/40 border border-slate-800 rounded-lg p-8 text-center text-xs text-slate-600 font-mono">
+                [SYSTEM_IDLE] No events matching current severity filter...
+              </div>
+            ) : (
+              filteredLogs.map((item, index) => {
+                let reasons: string[] = [];
+                try {
+                  reasons = typeof item.flagged_reasons === 'string' 
+                    ? JSON.parse(item.flagged_reasons) 
+                    : item.flagged_reasons || [];
+                } catch {
+                  reasons = [];
+                }
+
+                return (
+                  <div key={index} className="bg-slate-900/80 border border-slate-800/90 rounded-lg p-4 hover:border-cyan-800/60 transition-all">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-bold text-cyan-300">
+                            {item.mint_address.slice(0, 10)}...{item.mint_address.slice(-6)}
+                          </span>
+                          {getRiskBadge(item.risk_score)}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          EVENT: <span className="text-slate-300">{item.event_type}</span> | TX: {item.signature ? `${item.signature.slice(0, 12)}...` : 'N/A'}
+                        </p>
+                      </div>
+
+                      <a 
+                        href={`https://solana.fm/address/${item.mint_address}`} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="text-slate-600 hover:text-cyan-400 transition-colors p-1"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+
+                    {/* Forensic Reasons Banner */}
+                    {reasons.length > 0 && (
+                      <div className="mt-3 pt-2.5 border-t border-slate-800/80 space-y-1">
+                        {reasons.map((r: string, rIdx: number) => (
+                          <div key={rIdx} className="flex items-center gap-2 text-[11px] text-amber-400/90">
+                            <AlertTriangle className="w-3 h-3 shrink-0" />
+                            <span>{r}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         </div>
