@@ -6,6 +6,8 @@ import {
   ExternalLink, RefreshCw, FileText, Cpu, Database, Radio, Filter,
   Copy, Check
 } from 'lucide-react';
+import { ClusterAnalysisCard } from '../components/ClusterAnalysisCard';
+import { RealTimeThreatBanner } from '../components/RealTimeThreatBanner';
 
 interface RiskLog {
   mint_address: string;
@@ -19,10 +21,19 @@ interface RiskLog {
   created_at: string;
 }
 
+interface ClusterAnalysis {
+  totalClusters: number;
+  clusters: any[];
+  criticalRiskClusters: number;
+  highestSingleClusterPercentage: number;
+  devEntityHoldingPercentage: number;
+}
+
 export default function Dashboard() {
   const [logs, setLogs] = useState<RiskLog[]>([]);
   const [searchMint, setSearchMint] = useState('');
   const [searchResult, setSearchResult] = useState<any>(null);
+  const [clusterAnalysis, setClusterAnalysis] = useState<ClusterAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchingLogs, setFetchingLogs] = useState(true);
   const [filterSeverity, setFilterSeverity] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'SAFE'>('ALL');
@@ -61,6 +72,21 @@ export default function Dashboard() {
     fetchRiskFeed();
   }, []);
 
+  // Fetch cluster analysis for token
+  const fetchClusterAnalysis = async (mint: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/tokens/${mint}/clusters`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) {
+          setClusterAnalysis(json.clusters);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch cluster analysis:', err);
+    }
+  };
+
   // Search specific mint address
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,20 +95,52 @@ export default function Dashboard() {
 
     setLoading(true);
     setSearchResult(null);
+    setClusterAnalysis(null);
 
     try {
-      const res = await fetch(`${API_BASE}/tokens/${cleanMint}`);
-      const json = await res.json();
-      if (json.success) {
-        setSearchResult(json);
+      const [tokenRes, clusterRes] = await Promise.all([
+        fetch(`${API_BASE}/tokens/${cleanMint}`),
+        fetch(`${API_BASE}/tokens/${cleanMint}/clusters`).catch(() => new Response(JSON.stringify({ success: false }))),
+      ]);
+
+      const tokenJson = await tokenRes.json();
+      const clusterJson = await clusterRes.json();
+
+      if (tokenJson.success) {
+        setSearchResult(tokenJson);
+        
+        if (clusterJson.success) {
+          setClusterAnalysis(clusterJson.clusters);
+        }
       } else {
-        setSearchResult({ error: json.error || 'Token mint evaluation failed.' });
+        setSearchResult({ error: tokenJson.error || 'Token mint evaluation failed.' });
       }
     } catch (err) {
       console.error('Search API connection error:', err);
       setSearchResult({ error: 'Failed to connect to indexer API.' });
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Subscribe to cluster monitoring
+  const handleSubscribeToAlerts = async (clusterIds: string[]) => {
+    if (!searchResult?.token?.mint_address) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/tokens/${searchResult.token.mint_address}/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clusterIds, autoSubscribeTopHolders: true }),
+      });
+
+      if (res.ok) {
+        const json = await res.json();
+        alert(`✅ Subscribed ${json.subscribed} wallets to insider dump alerts!`);
+      }
+    } catch (err) {
+      console.error('Subscription error:', err);
+      alert('Failed to subscribe to alerts');
     }
   };
 
@@ -100,15 +158,20 @@ export default function Dashboard() {
     return true;
   });
 
-  const highRiskCount = logs.filter((l) => l.risk_score >= 50).length;
-
   return (
     <div className="min-h-screen bg-[#070b14] text-slate-200 p-4 md:p-8 font-mono relative overflow-hidden">
       {/* Visual Ambient Cyber Grids */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#0f172a15_1px,transparent_1px),linear-gradient(to_bottom,#0f172a15_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none" />
 
+      {/* Real-Time Threat Banner (FEATURE 2) */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-slate-950 to-transparent p-4 pointer-events-none">
+        <div className="max-w-7xl mx-auto pointer-events-auto">
+          <RealTimeThreatBanner apiUrl={API_BASE.replace('/api', '')} />
+        </div>
+      </div>
+
       {/* Header Bar */}
-      <header className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between pb-6 border-b border-cyan-900/40 gap-4 relative z-10">
+      <header className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between pb-6 border-b border-cyan-900/40 gap-4 relative z-10 mt-16 md:mt-0">
         <div>
           <div className="flex items-center gap-3">
             <div className="relative">
@@ -121,7 +184,7 @@ export default function Dashboard() {
                   SOLANA FORENSIC GUARD
                 </h1>
                 <span className="bg-cyan-950 text-cyan-400 border border-cyan-800 text-[10px] px-2 py-0.5 rounded font-bold">
-                  v2.4
+                  v2.4 + CLUSTER AI
                 </span>
               </div>
               <p className="text-slate-500 text-xs mt-0.5 tracking-tight font-sans">
@@ -163,7 +226,7 @@ export default function Dashboard() {
             <span>HIGH RISK FLAGS</span>
             <AlertTriangle className="w-4 h-4 text-red-400" />
           </div>
-          <div className="text-2xl font-bold text-red-400 mt-1">{highRiskCount}</div>
+          <div className="text-2xl font-bold text-red-400 mt-1">{logs.filter((l) => l.risk_score >= 50).length}</div>
         </div>
 
         <div className="bg-slate-900/70 border border-cyan-900/30 p-3.5 rounded-lg">
@@ -186,7 +249,7 @@ export default function Dashboard() {
       {/* Main Workspace */}
       <main className="max-w-7xl mx-auto mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6 relative z-10">
         
-        {/* On-Demand Audit Scanner: ORDERED FIRST ON MOBILE (order-first), LAST ON DESKTOP (lg:order-last) */}
+        {/* On-Demand Audit Scanner */}
         <div className="space-y-4 order-first lg:order-last">
           <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-5">
             <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-800">
@@ -327,9 +390,16 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        </div>
 
-        {/* Realtime Threat Stream: ORDERED LAST ON MOBILE (order-last), FIRST ON DESKTOP (lg:order-first) */}
+          {/* Cluster Analysis Card (FEATURE 1) */}
+          {clusterAnalysis && searchResult && (
+            <ClusterAnalysisCard 
+              analysis={clusterAnalysis}
+              onSubscribe={handleSubscribeToAlerts}
+            />
+          )}
+        </div>
+        {/* Realtime Threat Stream */}
         <div className="lg:col-span-2 space-y-4 order-last lg:order-first">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
             <div className="flex items-center gap-2">

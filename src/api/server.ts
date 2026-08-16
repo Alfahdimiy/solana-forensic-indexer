@@ -1,12 +1,24 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import PDFDocument from 'pdfkit';
+import { WebSocketServer, WebSocket } from 'ws';
+import * as http from 'http';
 import { pool } from '../config/db.js';
 import { TokenEvaluator } from '../indexer/evaluator.js';
 import { sendTelegramRiskAlert } from '../services/notifier.js';
+import { clusterAnalyzer } from '../services/clusterAnalyzer.js';
+import { threatLogger } from '../services/threatLogger.js';
+import { heliusRPC } from '../services/heliusRpc.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Create HTTP server for WebSocket support
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
+// Store active WebSocket connections
+const connectedClients = new Set<WebSocket>();
 
 // Enable explicit CORS for Vercel cross-origin requests
 app.use(cors({
@@ -20,9 +32,39 @@ app.use(express.json());
 // Initialize Evaluator for On-Demand Requests
 const evaluator = new TokenEvaluator(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
 
+// ==========================================
+// WebSocket Connection Handler
+// ==========================================
+wss.on('connection', (ws: WebSocket) => {
+  console.log('🔌 WebSocket client connected');
+  connectedClients.add(ws);
+
+  ws.on('close', () => {
+    console.log('🔌 WebSocket client disconnected');
+    connectedClients.delete(ws);
+  });
+
+  ws.on('error', (error) => {
+    console.error('❌ WebSocket error:', error);
+    connectedClients.delete(ws);
+  });
+});
+
+// ==========================================
+// Broadcast function for real-time threats
+// ==========================================
+function broadcastThreatAlert(alert: any): void {
+  const message = JSON.stringify({ type: 'THREAT_ALERT', data: alert });
+  connectedClients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  });
+}
+
 // 1. Health check endpoint
 app.get('/api/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'Solana Forensic Indexer API' });
+  res.json({ status: 'ok', service: 'Solana Forensic Indexer API', wsConnected: connectedClients.size });
 });
 
 // 2. Fetch all flagged token risks
@@ -221,8 +263,196 @@ app.get('/api/tokens/:mint/report', async (req: Request, res: Response) => {
   }
 });
 
+// ==========================================
+// NEW ENDPOINTS: Feature 1 - Cluster Analysis
+// ==========================================
+
+// 5. Get cluster analysis for a token (Funder Clustering)
+app.get('/api/tokens/:mint/clusters', async (req: Request, res: Response) => {
+  const mint = req.params.mint as string;
+
+  try {
+    let analysis = await clusterAnalyzer.getClusterAnalysis(mint);
+
+    // If not cached, run analysis now
+    if (!analysis) {
+      analysis = await clusterAnalyzer.analyzeTokenClustering(mint);
+    }
+
+    // Fetch threat summary
+    const [threatRows] = await pool.query(
+      `SELECT COUNT(*) as threat_count, threat_status FROM realtime_threat_logs 
+       WHERE mint_address = ? AND logged_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
+       GROUP BY threat_status`,
+      [mint]
+    );
+
+    res.json({
+      success: true,
+      clusters: analysis,
+      recentThreats: threatRows,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 6. Subscribe token clusters to webhook monitoring (Feature 2)
+app.post('/api/tokens/:mint/subscribe', async (req: Request, res: Response) => {
+  const mint = req.params.mint as string;
+  const { clusterIds, autoSubscribeTopHolders } = req.body;
+
+  try {
+    const analysis = await clusterAnalyzer.getClusterAnalysis(mint);
+
+    if (!analysis) {
+      return res.status(404).json({ success: false, error: 'Cluster analysis not found for token' });
+    }
+
+    let subscribedWallets: string[] = [];
+
+    // Subscribe specified clusters
+    if (clusterIds && Array.isArray(clusterIds)) {
+      for (const cluster of analysis.clusters) {
+        if (clusterIds.includes(cluster.clusterId)) {
+          await clusterAnalyzer.subscribeClusterToMonitoring(mint, cluster.clusterId, cluster.childWallets);
+          subscribedWallets.push(...cluster.childWallets);
+        }
+      }
+    }
+
+    // Auto-subscribe top holders if requested
+    if (autoSubscribeTopHolders) {
+      for (const cluster of analysis.clusters) {
+        await clusterAnalyzer.subscribeClusterToMonitoring(mint, cluster.clusterId, cluster.childWallets);
+        subscribedWallets.push(...cluster.childWallets);
+      }
+    }
+
+    res.json({
+      success: true,
+      subscribed: subscribedWallets.length,
+      wallets: subscribedWallets,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==========================================
+// NEW ENDPOINTS: Feature 2 - Threat Detection
+// ==========================================
+
+// 7. Helius Webhook Receiver (Insider Activity Detection)
+app.post('/api/webhook/helius', async (req: Request, res: Response) => {
+  try {
+    // Validate webhook signature
+    const signature = req.headers['x-helius-signature'] as string;
+    const payload = JSON.stringify(req.body);
+
+    if (signature && !heliusRPC.validateWebhookSignature(payload, signature)) {
+      console.warn('⚠️  Invalid webhook signature');
+      return res.status(401).json({ success: false, error: 'Invalid signature' });
+    }
+
+    const event = req.body;
+    const details = heliusRPC.parseWebhookEvent(event);
+
+    if (!details) {
+      return res.status(400).json({ success: false, error: 'Invalid event format' });
+    }
+
+    console.log(`📨 Webhook received: ${details.eventType} from ${details.source.slice(0, 8)}...`);
+
+    // 1. Check if source wallet is being monitored
+    const monitoringInfo = await threatLogger.getWalletMonitoringInfo(details.source);
+
+    if (monitoringInfo.isMonitored) {
+      // 2. Log as critical threat
+      const threatId = await threatLogger.logThreat({
+        mintAddress: monitoringInfo.tokens[0] || '',
+        clusterId: monitoringInfo.clusters[0] || 'unknown',
+        threatWallet: details.source,
+        eventType: details.eventType as any,
+        transactionHash: details.signature,
+        transactionAmount: details.amount ? BigInt(details.amount) : undefined,
+        transactionType: 'INSIDER_ACTIVITY',
+        threatStatus: 'CRITICAL',
+        webhookReceivedAt: new Date(),
+      });
+
+      // 3. Broadcast real-time alert to WebSocket clients
+      broadcastThreatAlert({
+        threatId,
+        mint: monitoringInfo.tokens[0],
+        wallet: details.source,
+        eventType: details.eventType,
+        transactionHash: details.signature,
+        message: `🚨 INSIDER DUMP DETECTED: ${details.eventType} from monitored wallet`,
+        severity: 'CRITICAL',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    res.json({ success: true, received: true });
+  } catch (error: any) {
+    console.error('❌ Webhook processing error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 8. Get real-time threats for a token
+app.get('/api/tokens/:mint/threats', async (req: Request, res: Response) => {
+  const mint = req.params.mint as string;
+  const { hours = '24' } = req.query;
+
+  try {
+    const threats = await threatLogger.getRecentThreats(mint, parseInt(hours as string));
+
+    res.json({
+      success: true,
+      count: threats.length,
+      threats,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 9. Get active critical threats (dashboard)
+app.get('/api/threats/critical', async (req: Request, res: Response) => {
+  try {
+    const threats = await threatLogger.getActiveCriticalThreats();
+
+    res.json({
+      success: true,
+      criticalCount: threats.length,
+      threats,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 10. Unsubscribe wallet from monitoring
+app.post('/api/webhooks/unsubscribe', async (req: Request, res: Response) => {
+  const { walletAddress } = req.body;
+
+  try {
+    await threatLogger.unsubscribeWallet(walletAddress);
+
+    res.json({
+      success: true,
+      message: `${walletAddress.slice(0, 8)}... unsubscribed from monitoring`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 export function startApiServer(): void {
-  app.listen(PORT, () => {
+  server.listen(PORT, () => {
     console.log(`🚀 REST API Server running on http://localhost:${PORT}`);
+    console.log(`🔌 WebSocket server ready at ws://localhost:${PORT}`);
   });
 }

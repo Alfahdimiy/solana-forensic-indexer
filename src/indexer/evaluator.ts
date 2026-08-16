@@ -1,6 +1,7 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint, Mint, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { pool } from '../config/db.js';
+import { clusterAnalyzer, ClusterAnalysisResult } from '../services/clusterAnalyzer.js';
 
 export interface SecurityProfile {
   mintAddress: string;
@@ -17,6 +18,10 @@ export interface SecurityProfile {
   flaggedReasons: string[];
   topHolderPercentage: number;
   isLpBurnedOrLocked: boolean;
+  // New cluster analysis fields
+  clusterAnalysis?: ClusterAnalysisResult;
+  trueClustersHoldingPercentage?: number;
+  isClustersHighRisk?: boolean;
 }
 
 export class TokenEvaluator {
@@ -166,6 +171,19 @@ export class TokenEvaluator {
     // 3. Compute top 10 holders concentration percentage
     const topHolderPercentage = await this.fetchTopHolderConcentration(mintPubkey, mintInfo.supply);
 
+    // 4. Perform cluster analysis (NEW FEATURE #1)
+    let clusterAnalysis: ClusterAnalysisResult | null = null;
+    let trueClustersHoldingPercentage = 0;
+    let isClustersHighRisk = false;
+
+    try {
+      clusterAnalysis = await clusterAnalyzer.analyzeTokenClustering(mintAddressStr);
+      trueClustersHoldingPercentage = clusterAnalysis.devEntityHoldingPercentage;
+      isClustersHighRisk = clusterAnalysis.criticalRiskClusters > 0;
+    } catch (error) {
+      console.warn(`⚠️  Cluster analysis failed for ${mintAddressStr}:`, error);
+    }
+
     let riskScore = 0;
     const flaggedReasons: string[] = [];
 
@@ -186,6 +204,12 @@ export class TokenEvaluator {
       flaggedReasons.push(`HIGH_HOLDER_CONCENTRATION: Top 10 wallets hold ${topHolderPercentage}% of supply`);
     }
 
+    // NEW: Add cluster risk scoring
+    if (isClustersHighRisk && trueClustersHoldingPercentage > 12) {
+      riskScore += 30;
+      flaggedReasons.push(`🚨 TRUE INSIDER/DEV CLUSTER RISK: ${trueClustersHoldingPercentage.toFixed(2)}% held by coordinated entities (>${12}% threshold)`);
+    }
+
     return {
       mintAddress: mintAddressStr,
       name: meta.name,
@@ -201,6 +225,10 @@ export class TokenEvaluator {
       flaggedReasons,
       topHolderPercentage,
       isLpBurnedOrLocked: true,
+      // NEW: Cluster analysis fields
+      clusterAnalysis: clusterAnalysis || undefined,
+      trueClustersHoldingPercentage,
+      isClustersHighRisk,
     };
   }
 
