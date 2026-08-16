@@ -39,10 +39,15 @@ export default function Dashboard() {
   const [filterSeverity, setFilterSeverity] = useState<'ALL' | 'CRITICAL' | 'HIGH' | 'SAFE'>('ALL');
   const [copiedWallet, setCopiedWallet] = useState<string | null>(null);
 
-  // Dynamic API URL for Vercel -> Render production connection
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL 
-    ? `${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, '')}/api`
-    : 'https://solana-forensic-indexer.onrender.com/api';
+  // Dynamic API & WebSocket URLs for Vercel -> Render production connection
+  const RAW_BACKEND_URL = (
+    process.env.NEXT_PUBLIC_API_URL || 
+    process.env.NEXT_PUBLIC_BACKEND_URL || 
+    'https://solana-forensic-indexer.onrender.com'
+  ).replace(/\/$/, '');
+
+  const API_BASE = `${RAW_BACKEND_URL}/api`;
+  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || RAW_BACKEND_URL.replace(/^http/, 'ws');
 
   // Copy helper function
   const copyToClipboard = (text: string, label: string) => {
@@ -55,7 +60,9 @@ export default function Dashboard() {
   const fetchRiskFeed = async () => {
     setFetchingLogs(true);
     try {
-      const res = await fetch(`${API_BASE}/tokens/risks`);
+      const res = await fetch(`${API_BASE}/tokens/risks`, {
+        headers: { 'Content-Type': 'application/json' },
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.success) {
@@ -72,22 +79,7 @@ export default function Dashboard() {
     fetchRiskFeed();
   }, []);
 
-  // Fetch cluster analysis for token
-  const fetchClusterAnalysis = async (mint: string) => {
-    try {
-      const res = await fetch(`${API_BASE}/tokens/${mint}/clusters`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          setClusterAnalysis(json.clusters);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch cluster analysis:', err);
-    }
-  };
-
-  // Search specific mint address
+  // Search specific mint address with decoupled cluster query
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanMint = searchMint.trim();
@@ -98,26 +90,36 @@ export default function Dashboard() {
     setClusterAnalysis(null);
 
     try {
-      const [tokenRes, clusterRes] = await Promise.all([
-        fetch(`${API_BASE}/tokens/${cleanMint}`),
-        fetch(`${API_BASE}/tokens/${cleanMint}/clusters`).catch(() => new Response(JSON.stringify({ success: false }))),
-      ]);
+      const tokenRes = await fetch(`${API_BASE}/tokens/${cleanMint}`, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!tokenRes.ok) {
+        throw new Error(`Server returned HTTP ${tokenRes.status}`);
+      }
 
       const tokenJson = await tokenRes.json();
-      const clusterJson = await clusterRes.json();
 
       if (tokenJson.success) {
         setSearchResult(tokenJson);
         
-        if (clusterJson.success) {
-          setClusterAnalysis(clusterJson.clusters);
-        }
+        // Fetch cluster analysis non-blockingly
+        fetch(`${API_BASE}/tokens/${cleanMint}/clusters`, {
+          headers: { 'Content-Type': 'application/json' },
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((clusterJson) => {
+            if (clusterJson && clusterJson.success) {
+              setClusterAnalysis(clusterJson.clusters);
+            }
+          })
+          .catch((cErr) => console.warn('Cluster analysis unavailable for token:', cErr));
       } else {
         setSearchResult({ error: tokenJson.error || 'Token mint evaluation failed.' });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Search API connection error:', err);
-      setSearchResult({ error: 'Failed to connect to indexer API.' });
+      setSearchResult({ error: `Failed to connect to indexer API (${err.message || 'Check Render service'}).` });
     } finally {
       setLoading(false);
     }
@@ -166,7 +168,7 @@ export default function Dashboard() {
       {/* Real-Time Threat Banner (FEATURE 2) */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-slate-950 to-transparent p-4 pointer-events-none">
         <div className="max-w-7xl mx-auto pointer-events-auto">
-          <RealTimeThreatBanner apiUrl={API_BASE.replace('/api', '')} />
+          <RealTimeThreatBanner apiUrl={RAW_BACKEND_URL} wsUrl={WS_URL} />
         </div>
       </div>
 
@@ -399,6 +401,7 @@ export default function Dashboard() {
             />
           )}
         </div>
+
         {/* Realtime Threat Stream */}
         <div className="lg:col-span-2 space-y-4 order-last lg:order-first">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 border border-slate-800 p-3 rounded-lg">
