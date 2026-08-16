@@ -47,7 +47,6 @@ export default function Dashboard() {
   ).replace(/\/$/, '');
 
   const API_BASE = `${RAW_BACKEND_URL}/api`;
-  const WS_URL = process.env.NEXT_PUBLIC_WS_URL || RAW_BACKEND_URL.replace(/^http/, 'ws');
 
   // Copy helper function
   const copyToClipboard = (text: string, label: string) => {
@@ -168,7 +167,7 @@ export default function Dashboard() {
       {/* Real-Time Threat Banner (FEATURE 2) */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-slate-950 to-transparent p-4 pointer-events-none">
         <div className="max-w-7xl mx-auto pointer-events-auto">
-          <RealTimeThreatBanner apiUrl={RAW_BACKEND_URL} wsUrl={WS_URL} />
+          <RealTimeThreatBanner apiUrl={RAW_BACKEND_URL} />
         </div>
       </div>
 
