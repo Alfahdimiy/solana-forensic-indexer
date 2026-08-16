@@ -184,7 +184,7 @@ export default function Dashboard() {
                   SOLANA FORENSIC GUARD
                 </h1>
                 <span className="bg-cyan-950 text-cyan-400 border border-cyan-800 text-[10px] px-2 py-0.5 rounded font-bold">
-                  v2.4 + CLUSTER AI
+                  v2.4 + CLUSTER
                 </span>
               </div>
               <p className="text-slate-500 text-xs mt-0.5 tracking-tight font-sans">
