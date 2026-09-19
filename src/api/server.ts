@@ -9,6 +9,7 @@ import { sendTelegramRiskAlert } from '../services/notifier.js';
 import { clusterAnalyzer } from '../services/clusterAnalyzer.js';
 import { threatLogger } from '../services/threatLogger.js';
 import { heliusRPC } from '../services/heliusRpc.js';
+import { initTelegramBot } from '../services/telegramBot.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -454,5 +455,8 @@ export function startApiServer(): void {
   server.listen(PORT, () => {
     console.log(`🚀 REST API Server running on http://localhost:${PORT}`);
     console.log(`🔌 WebSocket server ready at ws://localhost:${PORT}`);
+
+    // Start interactive Telegram bot listener
+    initTelegramBot(evaluator);
   });
 }
