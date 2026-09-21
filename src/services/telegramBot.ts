@@ -1,124 +1,126 @@
 import TelegramBot from 'node-telegram-bot-api';
+import { pool } from '../config/db.js';
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const DASHBOARD_URL = process.env.FRONTEND_URL || 'https://ndexer.vercel.app';
-
-// Initialize bot with polling mode (or webhook mode)
-export const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
-
-// Solana base58 address validation (32 to 44 characters)
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://ndexer.vercel.app').replace(/\/$/, '');
 const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-/**
- * Replace this with a direct call to your internal audit function
- * or keep it fetching your local Express endpoint.
- */
-async function auditToken(mintAddress: string) {
-  const localPort = process.env.PORT || 3000;
-  const res = await fetch(`http://localhost:${localPort}/api/tokens/${mintAddress}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
-}
+let botInstance: any = null;
 
-export function initTelegramCommands() {
-  console.log('🤖 Telegram interactive bot listener initialized.');
+export function initTelegramBot(evaluator: any): void {
+  if (!TELEGRAM_BOT_TOKEN) {
+      console.warn('⚠️ TELEGRAM_BOT_TOKEN is not configured. Telegram bot listener skipped.');
+          return;
+            }
 
-  // /start and /help command
-  bot.onText(/\/start|\/help/, (msg) => {
-    const chatId = msg.chat.id;
-    const text = `
-🛡️ *SOLANA FORENSIC GUARD BOT*
-Automated On-Chain Threat Telemetry & Audit
+              if (botInstance) return;
 
-*Commands:*
-• \`/scan <mint_address>\` - Run immediate forensic audit on any SPL token.
-• \`/help\` - View available commands.
-    `.trim();
+                // Resolves TS2351: "This expression is not constructable"
+                  const BotConstructor: any = (TelegramBot as any).default || TelegramBot;
+                    botInstance = new BotConstructor(TELEGRAM_BOT_TOKEN, { polling: true });
 
-    bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-  });
+                      console.log('🤖 Telegram interactive bot listener active.');
 
-  // /scan <mint> command
-  bot.onText(/\/scan(?:\s+(.+))?/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const inputAddress = match?.[1]?.trim();
+                        // /start & /help commands
+                          botInstance.onText(/\/start|\/help/, (msg: any) => {
+                              const text = `
+                              🛡️ *SOLANA FORENSIC GUARD BOT*
+                              Live On-Chain Threat Telemetry & Security Engine
 
-    if (!inputAddress) {
-      return bot.sendMessage(
-        chatId,
-        '⚠️ *Missing Address*\nUsage: `/scan <mint_address>`',
-        { parse_mode: 'Markdown' }
-      );
-    }
+                              *Available Commands:*
+                              • \`/scan <mint_address>\` — Run an immediate forensic audit.
+                              • \`/help\` — Display this menu.
+                                  `.trim();
 
-    if (!SOLANA_ADDRESS_REGEX.test(inputAddress)) {
-      return bot.sendMessage(
-        chatId,
-        '❌ *Invalid Solana Mint Address*\nPlease provide a valid Base58 public key (32-44 characters).',
-        { parse_mode: 'Markdown' }
-      );
-    }
+                                      botInstance.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+                                        });
 
-    const waitMsg = await bot.sendMessage(
-      chatId,
-      `🔍 *Analyzing on-chain metrics for:* \`${inputAddress.slice(0, 6)}...${inputAddress.slice(-4)}\`\n_Querying Helius RPC & checking risk telemetry..._`,
-      { parse_mode: 'Markdown' }
-    );
+                                          // /scan <mint_address> command
+                                            botInstance.onText(/\/scan(?:\s+(.+))?/, async (msg: any, match: any) => {
+                                                const chatId = msg.chat.id;
+                                                    const rawMint = match?.[1]?.trim();
 
-    try {
-      const data = await auditToken(inputAddress);
+                                                        if (!rawMint) {
+                                                              return botInstance.sendMessage(
+                                                                      chatId,
+                                                                              '⚠️ *Missing Address*\nUsage: `/scan <mint_address>`',
+                                                                                      { parse_mode: 'Markdown' }
+                                                                                            );
+                                                                                                }
 
-      if (!data.success) {
-        return bot.editMessageText(
-          `❌ *Audit Failed:* ${data.error || 'Token not found or RPC error.'}`,
-          { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' }
-        );
-      }
+                                                                                                    if (!SOLANA_ADDRESS_REGEX.test(rawMint)) {
+                                                                                                          return botInstance.sendMessage(
+                                                                                                                  chatId,
+                                                                                                                          '❌ *Invalid Solana Mint Address*\nPlease provide a valid Base58 public key (32–44 characters).',
+                                                                                                                                  { parse_mode: 'Markdown' }
+                                                                                                                                        );
+                                                                                                                                            }
 
-      const { liveProfile, token } = data;
+                                                                                                                                                const waitMsg = await botInstance.sendMessage(
+                                                                                                                                                      chatId,
+                                                                                                                                                            `🔍 *Forensic Scan Initiated*\nTarget: \`${rawMint.slice(0, 6)}...${rawMint.slice(-4)}\`\n_Querying Helius RPC & evaluating risk factors..._`,
+                                                                                                                                                                  { parse_mode: 'Markdown' }
+                                                                                                                                                                      );
 
-      // Extract risk parameters[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)[span_2](start_span)[span_2](end_span)
-      const mintAuthText = token?.mint_authority ? 'ACTIVE ⚠️' : 'REVOKED ✅'; //[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)
-      const freezeAuthText = token?.freeze_authority ? 'ACTIVE 🚨' : 'DISABLED ✅'; //[span_5](start_span)[span_5](end_span)[span_6](start_span)[span_6](end_span)
-      const lpText = liveProfile?.isLpBurnedOrLocked ? 'BURNED / LOCKED ✅' : 'UNLOCKED ⚠️'; //[span_7](start_span)[span_7](end_span)
-      const topHolders = liveProfile?.topHolderPercentage !== undefined ? `${liveProfile.topHolderPercentage}%` : 'N/A'; //[span_8](start_span)[span_8](end_span)
-      const liquidity = liveProfile?.liquidityUsd ? `$${Number(liveProfile.liquidityUsd).toLocaleString()} USD` : 'N/A'; //[span_9](start_span)[span_9](end_span)[span_10](start_span)[span_10](end_span)
-      const market = liveProfile?.tradedMarket || 'Raydium / DEX'; //[span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span)
+                                                                                                                                                                          try {
+                                                                                                                                                                                const liveProfile = await evaluator.evaluateToken(rawMint);
+                                                                                                                                                                                      await evaluator.saveTokenProfile(liveProfile, 'telegram_scan');
 
-      // Format audit response matching dashboard aesthetics[span_13](start_span)[span_13](end_span)[span_14](start_span)[span_14](end_span)
-      const response = `
-🛡️ *SOLANA FORENSIC AUDIT REPORT*
-━━━━━━━━━━━━━━━━━━━━━━
-🪙 *Token:* ${liveProfile?.name || 'Unknown'} (\`$${liveProfile?.symbol || 'N/A'}\`)
-📍 *Market:* \`${market}\`
-💧 *Liquidity:* \`${liquidity}\`
+                                                                                                                                                                                            const [tokenRows]: [any[], any] = await pool.query(
+                                                                                                                                                                                                    'SELECT * FROM tokens WHERE mint_address = ?',
+                                                                                                                                                                                                            [rawMint]
+                                                                                                                                                                                                                  );
+                                                                                                                                                                                                                        const token = tokenRows[0] || {};
 
-*On-Chain Security Controls:*
-• *Mint Authority:* ${mintAuthText}
-• *Freeze Authority:* ${freezeAuthText}
-• *LP Status:* ${lpText}
-• *Top 10 Holders:* \`${topHolders}\`
-• *Decimals:* \`${token?.decimals ?? 6}\`
+                                                                                                                                                                                                                              const mintAuth = token.mint_authority ? 'ACTIVE ⚠️' : 'REVOKED ✅';
+                                                                                                                                                                                                                                    const freezeAuth = token.freeze_authority ? 'ACTIVE 🚨' : 'DISABLED ✅';
+                                                                                                                                                                                                                                          const lpStatus = liveProfile.isLpBurnedOrLocked ? 'BURNED / LOCKED ✅' : 'UNLOCKED ⚠️';
+                                                                                                                                                                                                                                                const liquidity = liveProfile.liquidityUsd ? `$${Number(liveProfile.liquidityUsd).toLocaleString()} USD` : 'N/A';
+                                                                                                                                                                                                                                                      const topHolders = liveProfile.topHolderPercentage !== undefined ? `${liveProfile.topHolderPercentage}%` : 'N/A';
 
-*Creator:* \`${liveProfile?.creatorWallet || 'UNKNOWN / REVOKED'}\`
+                                                                                                                                                                                                                                                            let riskVerdict = '🟢 PASSED // LOW RISK';
+                                                                                                                                                                                                                                                                  if (liveProfile.riskScore >= 80) riskVerdict = '🔴 CRITICAL RISK';
+                                                                                                                                                                                                                                                                        else if (liveProfile.riskScore >= 50) riskVerdict = '🟠 HIGH RISK';
+                                                                                                                                                                                                                                                                              else if (liveProfile.riskScore > 0) riskVerdict = '🟡 MODERATE RISK';
 
-📄 [Download PDF Certificate](${DASHBOARD_URL}/api/tokens/${token?.mint_address || inputAddress}/report)
-🌐 [View on Solana.fm](https://solana.fm/address/${token?.mint_address || inputAddress})
-      `.trim(); //[span_15](start_span)[span_15](end_span)[span_16](start_span)[span_16](end_span)
+                                                                                                                                                                                                                                                                                    const report = `
+                                                                                                                                                                                                                                                                                    🛡️ *SOLANA FORENSIC AUDIT*
+                                                                                                                                                                                                                                                                                    ━━━━━━━━━━━━━━━━━━━━━━
+                                                                                                                                                                                                                                                                                    🪙 *Token:* ${liveProfile.name || 'Unknown'} (\`$${liveProfile.symbol || 'N/A'}\`)
+                                                                                                                                                                                                                                                                                    📊 *Risk Score:* ${riskVerdict} (\`${liveProfile.riskScore}/100\`)
+                                                                                                                                                                                                                                                                                    📍 *Market:* \`${liveProfile.tradedMarket || 'Raydium / DEX'}\`
+                                                                                                                                                                                                                                                                                    💧 *Liquidity:* \`${liquidity}\`
 
-      await bot.editMessageText(response, {
-        chat_id: chatId,
-        message_id: waitMsg.message_id,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-      });
+                                                                                                                                                                                                                                                                                    *On-Chain Controls:*
+                                                                                                                                                                                                                                                                                    • *Mint Authority:* ${mintAuth}
+                                                                                                                                                                                                                                                                                    • *Freeze Authority:* ${freezeAuth}
+                                                                                                                                                                                                                                                                                    • *LP Status:* ${lpStatus}
+                                                                                                                                                                                                                                                                                    • *Top 10 Holders:* \`${topHolders}\`
+                                                                                                                                                                                                                                                                                    • *Decimals:* \`${token.decimals ?? 6}\`
 
-    } catch (err: any) {
-      bot.editMessageText(
-        `🚨 *Audit Error:* Could not process token scan. (${err.message || 'Internal error'})`,
-        { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' }
-      );
-    }
-  });
-}
+                                                                                                                                                                                                                                                                                    *Creator:* \`${liveProfile.creatorWallet || 'UNKNOWN / REVOKED'}\`
 
+                                                                                                                                                                                                                                                                                    📄 [Download PDF Certificate](${FRONTEND_URL}/api/tokens/${rawMint}/report)
+                                                                                                                                                                                                                                                                                    🌐 [View on Solana.fm](https://solana.fm/address/${rawMint})
+                                                                                                                                                                                                                                                                                          `.trim();
+
+                                                                                                                                                                                                                                                                                                if (waitMsg) {
+                                                                                                                                                                                                                                                                                                        await botInstance.editMessageText(report, {
+                                                                                                                                                                                                                                                                                                                  chat_id: chatId,
+                                                                                                                                                                                                                                                                                                                            message_id: waitMsg.message_id,
+                                                                                                                                                                                                                                                                                                                                      parse_mode: 'Markdown',
+                                                                                                                                                                                                                                                                                                                                                disable_web_page_preview: true,
+                                                                                                                                                                                                                                                                                                                                                        });
+                                                                                                                                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                                                                                                                                                  } catch (err: any) {
+                                                                                                                                                                                                                                                                                                                                                                        console.error('Telegram audit error:', err);
+                                                                                                                                                                                                                                                                                                                                                                              if (waitMsg) {
+                                                                                                                                                                                                                                                                                                                                                                                      await botInstance.editMessageText(
+                                                                                                                                                                                                                                                                                                                                                                                                `🚨 *Scan Error:* Failed to evaluate token mint. (${err.message || 'RPC timeout'})`,
+                                                                                                                                                                                                                                                                                                                                                                                                          { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'Markdown' }
+                                                                                                                                                                                                                                                                                                                                                                                                                  );
+                                                                                                                                                                                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                                                                                                                                                              });
+                                                                                                                                                                                                                                                                                                                                                                                                                              }
+                                                                                                                                                                                                                                                                                                                                                                                                                              
